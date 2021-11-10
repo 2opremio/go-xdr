@@ -27,8 +27,11 @@ import (
 
 const maxInt32 = int(^uint32(0) >> 1)
 
-var errMaxSlice = "data exceeds max slice limit"
-var errIODecode = "%s while decoding %d bytes"
+var (
+	errMaxSlice     = "data exceeds max slice limit"
+	errIODecode     = "%s while decoding %d bytes"
+	unmarshalerType = reflect.TypeOf((*Unmarshaler)(nil)).Elem()
+)
 
 /*
 Unmarshal parses XDR-encoded data into the value pointed to by v reading from
@@ -74,6 +77,9 @@ UnmarshalError is returned with a human readable description as well as
 an ErrorCode value for further inspection from sophisticated callers.  Some
 potential issues are unsupported Go types, attempting to decode a value which is
 too large to fit into a specified Go type, and exceeding max slice limitations.
+
+If any of the types encountered comply with the Unmarshaler interface, the UnmarshalXDR
+method will be used instead of reflection (similarly to UnmarshalJSON in the encoding/json package)
 */
 func Unmarshal(r io.Reader, v interface{}) (int, error) {
 	d := Decoder{r: r}
@@ -770,6 +776,37 @@ func (d *Decoder) decodeInterface(v reflect.Value) (int, error) {
 	return d.decode(ve, 0)
 }
 
+func getUnmarshaler(ve reflect.Value) Unmarshaler {
+	// Check the type first to avoid an unnecessary allocation when casting to interface
+	if ve.Type().Implements(unmarshalerType) && ve.CanInterface() {
+		return ve.Interface().(Unmarshaler)
+	}
+	return nil
+}
+
+func getUnmarshalerFromNonPtr(ve reflect.Value) (Unmarshaler, error) {
+	if u := getUnmarshaler(ve); u != nil {
+		return u, nil
+	}
+
+	// Implements Unmarshaller by address?
+	// Check the type first, to avoid an unnecessary allocation when casting to interface
+	// TODO: this check is redundant if decoding got here through a pointer type
+	if reflect.PtrTo(ve.Type()).Implements(unmarshalerType) {
+		if !ve.CanAddr() {
+			msg := fmt.Sprintf("unaddressable value of %s implementing MarshalXDR() by pointer", ve.Type().Name())
+			err := marshalError("encode", ErrCustomUnaddressableByPointer, msg, nil, nil)
+			return nil, err
+		}
+		ptr := ve.Addr()
+		if ptr.CanInterface() {
+			return ptr.Interface().(Unmarshaler), nil
+		}
+	}
+
+	return nil, nil
+}
+
 // decode is the main workhorse for unmarshalling via reflection.  It uses
 // the passed reflection value to choose the XDR primitives to decode from
 // the encapsulated reader.  It is a recursive function,
@@ -780,6 +817,19 @@ func (d *Decoder) decode(ve reflect.Value, maxSize int) (int, error) {
 		msg := fmt.Sprintf("type '%s' is not valid", ve.Kind().String())
 		err := unmarshalError("decode", ErrUnsupportedType, msg, nil, nil)
 		return 0, err
+	}
+
+	// Check for Unmarshaler interface
+	if ve.Kind() != reflect.Ptr {
+		// For pointer types this will be checked again later on.
+		// (this is because pointers require decoding whether they are nil)
+		u, err := getUnmarshalerFromNonPtr(ve)
+		if err != nil {
+			return 0, err
+		}
+		if u != nil {
+			return u.UnmarshalXDR(d)
+		}
 	}
 
 	// Handle time.Time values by decoding them as an RFC3339 formatted
@@ -1013,6 +1063,13 @@ func (d *Decoder) decodePtr(v reflect.Value) (int, error) {
 		return n, err
 	}
 
+	// We intentionally check for Marshaler before deferencing the pointer.
+	// This is because, for unaddressable values, you cannot recover the
+	// pointer later on, which would make impossible to invoke by-address marshalers.
+	if u := getUnmarshaler(v); u != nil {
+		n2, err := u.UnmarshalXDR(d)
+		return n + n2, err
+	}
 	n2, err := d.decode(v.Elem(), 0)
 	return n + n2, err
 }
@@ -1038,6 +1095,10 @@ func (d *Decoder) Decode(v interface{}) (int, error) {
 			nil)
 	}
 
+	if unmarshaler, ok := v.(Unmarshaler); ok {
+		return unmarshaler.UnmarshalXDR(d)
+	}
+
 	vv := reflect.ValueOf(v)
 	if vv.Kind() != reflect.Ptr {
 		msg := fmt.Sprintf("can't unmarshal to non-pointer '%v' - use "+
@@ -1055,9 +1116,20 @@ func (d *Decoder) Decode(v interface{}) (int, error) {
 	return d.decode(vv.Elem(), 0)
 }
 
+// Read reads from the internal reader. This method can be useful for implementing UnmarshalXDR
+func (d *Decoder) Read(p []byte) (int, error) {
+	return d.r.Read(p)
+}
+
 // NewDecoder returns a Decoder that can be used to manually decode XDR data
 // from a provided reader.  Typically, Unmarshal should be used instead of
 // manually creating a Decoder.
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{r: r}
+}
+
+// Unmarshaler is the interface implemented by types that can unmarshal themselves from valid XDR.
+// The supplied decoder should be used to perform the decoding.
+type Unmarshaler interface {
+	UnmarshalXDR(e *Decoder) (int, error)
 }

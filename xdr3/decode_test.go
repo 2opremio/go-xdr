@@ -34,6 +34,51 @@ type subTest struct {
 	B uint8
 }
 
+type customDecodedType struct {
+	A uint8
+}
+
+const magicCustomDecoderCount = 123456
+
+func (c *customDecodedType) UnmarshalXDR(e *Decoder) (int, error) {
+	i, _, err := e.DecodeInt()
+	c.A = uint8(i)
+	// return magic number to indicate that the custom unmarshalling code was called
+	return magicCustomDecoderCount, err
+}
+
+type customDecodedTypeByValue struct {
+	A uint8
+}
+
+// make sure that (odd) method implementations by value also work
+func (c customDecodedTypeByValue) UnmarshalXDR(e *Decoder) (int, error) {
+	// there is no point in consuming the input since it can be saved (the method invocation is by value)
+	i, _, err := e.DecodeInt()
+	// return magic number to indicate that the custom unmarshalling code was called
+	return magicCustomDecoderCount + int(i), err
+}
+
+type customDecodedSubType struct {
+	A uint8
+	B customDecodedType
+}
+
+type customDecodedSubTypeByValue struct {
+	A uint8
+	B customDecodedTypeByValue
+}
+
+type customDecodedSubTypeWithPointer struct {
+	A uint8
+	B *customDecodedType
+}
+
+type customDecodedSubTypeByValueWithPointer struct {
+	A uint8
+	B *customDecodedTypeByValue
+}
+
 // allTypesTest is used to allow testing of the Unmarshal function into struct
 // fields of all supported types.
 type allTypesTest struct {
@@ -387,6 +432,13 @@ func TestUnmarshal(t *testing.T) {
 		{[]byte{0x00, 0x00}, allTypesTest{}, 2, &UnmarshalError{ErrorCode: ErrIO}},
 		{[]byte{0x00, 0x00, 0x00}, opaqueStruct{}, 3, &UnmarshalError{ErrorCode: ErrIO}},
 		{[]byte{0x00, 0x00, 0x00, 0x00, 0x00}, opaqueStruct{}, 5, &UnmarshalError{ErrorCode: ErrIO}},
+
+		// Unmarshaler interface
+		{[]byte{0x00, 0x00, 0x00, 0xFF}, customDecodedType{255}, magicCustomDecoderCount, nil},
+		{[]byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x10}, customDecodedSubType{255, customDecodedType{16}}, magicCustomDecoderCount + 4, nil},
+		{[]byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x10}, customDecodedSubTypeByValue{255, customDecodedTypeByValue{0}}, (magicCustomDecoderCount + 16) + 4, nil},
+		{[]byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x10}, customDecodedSubTypeWithPointer{255, &customDecodedType{16}}, magicCustomDecoderCount + 4 + 4, nil},
+		{[]byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x10}, customDecodedSubTypeByValueWithPointer{255, &customDecodedTypeByValue{0}}, (magicCustomDecoderCount + 16) + 4 + 4, nil},
 
 		// Expected errors
 		{nil, nilInterface, 0, &UnmarshalError{ErrorCode: ErrNilInterface}},

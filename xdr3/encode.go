@@ -24,7 +24,10 @@ import (
 	"time"
 )
 
-var errIOEncode = "%s while encoding %d bytes"
+var (
+	errIOEncode   = "%s while encoding %d bytes"
+	marshalerType = reflect.TypeOf((*Marshaler)(nil)).Elem()
+)
 
 /*
 Marshal writes the XDR encoding of v to writer w and returns the number of bytes
@@ -71,6 +74,9 @@ returned with a human readable description as well as an ErrorCode value for
 further inspection from sophisticated callers.  Some potential issues are
 unsupported Go types, attempting to encode more opaque data than can be
 represented by a single opaque XDR entry, and exceeding max slice limitations.
+
+If any of the types encountered comply with the Marshaler interface, the MarshalXDR
+method will be used instead of reflection (similarly to MarshalJSON in the encoding/json package)
 */
 func Marshal(w io.Writer, v interface{}) (int, error) {
 	enc := Encoder{w: w}
@@ -609,6 +615,38 @@ func (enc *Encoder) encodeInterface(v reflect.Value) (int, error) {
 	return enc.encode(ve)
 }
 
+func getMarshaler(ve reflect.Value) Marshaler {
+	if ve.Type().Implements(marshalerType) && ve.CanInterface() {
+		return ve.Interface().(Marshaler)
+	}
+	return nil
+}
+
+func getMarshalerFromNonPtr(ve reflect.Value) (Marshaler, error) {
+	if m := getMarshaler(ve); m != nil {
+		return m, nil
+	}
+
+	// Implements it by address?
+	// TODO: this check is redundant if encoding got here through a pointer type
+	if reflect.PtrTo(ve.Type()).Implements(marshalerType) {
+		if !ve.CanAddr() {
+			msg := fmt.Sprintf("unaddressable value of %s implementing MarshalXDR() by pointer", ve.Type().Name())
+			err := marshalError("encode", ErrCustomUnaddressableByPointer, msg, nil, nil)
+			return nil, err
+		}
+		ptr := ve.Addr()
+		if ptr.CanInterface() {
+			iface := ve.Interface()
+			if u, ok := iface.(Marshaler); ok {
+				return u, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
 // encode is the main workhorse for marshalling via reflection.  It uses
 // the passed reflection value to choose the XDR primitives to encode into
 // the encapsulated writer and returns the number of bytes written.  It is a
@@ -623,6 +661,19 @@ func (enc *Encoder) encode(ve reflect.Value) (int, error) {
 		return n, err
 	}
 
+	// Check for marshaler interface
+	if ve.Kind() != reflect.Ptr {
+		// For pointer types this will be checked again later on.
+		// (this is because pointers require encoding whether they are nil)
+		m, err := getMarshalerFromNonPtr(ve)
+		if err != nil {
+			return n, err
+		}
+		if m != nil {
+			return m.MarshalXDR(enc)
+		}
+	}
+
 	if ve.Kind() == reflect.Ptr {
 		if ve.IsNil() {
 			return enc.EncodeBool(false)
@@ -632,6 +683,15 @@ func (enc *Encoder) encode(ve reflect.Value) (int, error) {
 		n += n2
 
 		if err != nil {
+			return n, err
+		}
+
+		// We intentionally check for Unmarshaler before deferencing the pointer.
+		// This is because, for unaddressable values, you cannot recover the
+		// pointer later on, which would make impossible to invoke by-address marshalers.
+		if u := getMarshaler(ve); u != nil {
+			n2, err = u.MarshalXDR(enc)
+			n += n2
 			return n, err
 		}
 
@@ -735,6 +795,10 @@ func (enc *Encoder) Encode(v interface{}) (int, error) {
 		return 0, err
 	}
 
+	if marshaler, ok := v.(Marshaler); ok {
+		return marshaler.MarshalXDR(enc)
+	}
+
 	vv := reflect.ValueOf(v)
 	vve := vv
 	for vve.Kind() == reflect.Ptr {
@@ -751,6 +815,11 @@ func (enc *Encoder) Encode(v interface{}) (int, error) {
 	return enc.encode(vve)
 }
 
+// Write writes to the internal writer. This method can be useful for implementing MarshalXDR
+func (enc *Encoder) Write(p []byte) (int, error) {
+	return enc.w.Write(p)
+}
+
 // NewEncoder returns an object that can be used to manually choose fields to
 // XDR encode to the passed writer w.  Typically, Marshal should be used instead
 // of manually creating an Encoder. An Encoder, along with several of its
@@ -759,4 +828,10 @@ func (enc *Encoder) Encode(v interface{}) (int, error) {
 // in complex scenarios where automatic reflection-based encoding won't work.
 func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{w: w}
+}
+
+// Marshaler is the interface implemented by types that can marshal themselves into valid XDR.
+// The supplied encoder should be used to perform the encoding.
+type Marshaler interface {
+	MarshalXDR(e *Encoder) (int, error)
 }

@@ -26,6 +26,49 @@ import (
 	. "github.com/stellar/go-xdr/xdr3"
 )
 
+type customEncodedType struct {
+	A uint8
+}
+
+const magicCustomEncoderValue = 0xfafb
+
+func (c customEncodedType) MarshalXDR(e *Encoder) (int, error) {
+	// ignore the real value and output a magic number to make sure we were called
+	i, err := e.EncodeInt(int32(magicCustomEncoderValue))
+	return i, err
+}
+
+type customEncodedTypeByPointer struct {
+	A uint8
+}
+
+// make sure that interface implementations by pointer also work
+func (c *customEncodedTypeByPointer) MarshalXDR(e *Encoder) (int, error) {
+	// ignore the real value and output a magic number to make sure we were called
+	i, err := e.EncodeInt(int32(magicCustomEncoderValue))
+	return i, err
+}
+
+type customEncodedSubType struct {
+	A uint8
+	B customEncodedType
+}
+
+type customEncodedSubTypeByPointer struct {
+	A uint8
+	B customEncodedTypeByPointer
+}
+
+type customEncodedSubTypeWithPointer struct {
+	A uint8
+	B *customEncodedType
+}
+
+type customEncodedSubTypeWithPointerByPointer struct {
+	A uint8
+	B *customEncodedTypeByPointer
+}
+
 // testExpectedMRet is a convenience method to test an expected number of bytes
 // written and error for a marshal.
 func testExpectedMRet(t *testing.T, name string, n, wantN int, err, wantErr error) bool {
@@ -306,6 +349,16 @@ func TestMarshal(t *testing.T) {
 		{opaqueStruct{[]uint8{1}, [1]uint8{2}},
 			[]byte{0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01},
 			8, &MarshalError{ErrorCode: ErrIO}},
+
+		// Marshaler interface
+		{customEncodedType{255}, []byte{0x00, 0x00, 0xFA, 0xFB}, 4, nil},
+		{&customEncodedTypeByPointer{255}, []byte{0x00, 0x00, 0xFA, 0xFB}, 4, nil},
+		{customEncodedSubType{255, customEncodedType{16}}, []byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFA, 0xFB}, 8, nil},
+		{customEncodedSubTypeWithPointer{255, &customEncodedType{16}}, []byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFA, 0xFB}, 12, nil},
+		{customEncodedSubTypeWithPointerByPointer{255, &customEncodedTypeByPointer{16}}, []byte{0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFA, 0xFB}, 12, nil},
+		// Expected failures
+		{customEncodedTypeByPointer{255}, []byte{}, 0, &MarshalError{ErrorCode: ErrCustomUnaddressableByPointer}},
+		{customEncodedSubTypeByPointer{255, customEncodedTypeByPointer{16}}, []byte{0x00, 0x00, 0x00, 0xFF}, 4, &MarshalError{ErrorCode: ErrCustomUnaddressableByPointer}},
 
 		// Expected errors
 		{nilInterface, []byte{}, 0, &MarshalError{ErrorCode: ErrNilInterface}},

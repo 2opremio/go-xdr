@@ -70,20 +70,25 @@ const (
 	// ErrBadUnionValue indicates a union's value is not populated when it should
 	// be
 	ErrBadUnionValue
+
+	// ErrCustomUnaddressableByPointer indicates that an unaddresable value that implements Marshaler/Unmarshaler
+	// by pointer was passed and, as a result, the custom marshaler/unmarshaler cannot be invoked
+	ErrCustomUnaddressableByPointer
 )
 
 // Map of ErrorCode values back to their constant names for pretty printing.
 var errorCodeStrings = map[ErrorCode]string{
-	ErrBadArguments:    "ErrBadArguments",
-	ErrUnsupportedType: "ErrUnsupportedType",
-	ErrBadEnumValue:    "ErrBadEnumValue",
-	ErrNotSettable:     "ErrNotSettable",
-	ErrOverflow:        "ErrOverflow",
-	ErrNilInterface:    "ErrNilInterface",
-	ErrIO:              "ErrIO",
-	ErrParseTime:       "ErrParseTime",
-	ErrBadUnionSwitch:  "ErrBadUnionSwitch",
-	ErrBadUnionValue:   "ErrBadUnionValue",
+	ErrBadArguments:                 "ErrBadArguments",
+	ErrUnsupportedType:              "ErrUnsupportedType",
+	ErrBadEnumValue:                 "ErrBadEnumValue",
+	ErrNotSettable:                  "ErrNotSettable",
+	ErrOverflow:                     "ErrOverflow",
+	ErrNilInterface:                 "ErrNilInterface",
+	ErrIO:                           "ErrIO",
+	ErrParseTime:                    "ErrParseTime",
+	ErrBadUnionSwitch:               "ErrBadUnionSwitch",
+	ErrBadUnionValue:                "ErrBadUnionValue",
+	ErrCustomUnaddressableByPointer: "ErrCustomUnaddressableByPointer",
 }
 
 // String returns the ErrorCode as a human-readable name.
